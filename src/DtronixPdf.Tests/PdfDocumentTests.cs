@@ -26,7 +26,16 @@ namespace DtronixPdf.Tests
             await using var document = await PdfDocument.Load("TestPdf.pdf", null);
             Assert.AreEqual(1, document.Pages);
         }
-
+        
+        [Test]
+        public async Task LoadsPdfDocumentFromByteArray()
+        {
+            var data = await LoadFileContentAsync("TestPdf.pdf");
+            
+            await using var document = await PdfDocument.Load(data, null);
+            Assert.AreEqual(1, document.Pages);
+        }
+        
         [Test]
         public async Task SavesDocument()
         {
@@ -37,6 +46,13 @@ namespace DtronixPdf.Tests
             Assert.Greater(sw.Length, 10000);
         }
 
+        private async Task<byte[]> LoadFileContentAsync(string path)
+        {
+            await using var fs = File.Open(path, FileMode.Open);
+            await using MemoryStream ms = new ();
+            await fs.CopyToAsync(ms);
+            return ms.ToArray();
+        }
 
     }
 }

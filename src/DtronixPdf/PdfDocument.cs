@@ -2,6 +2,7 @@
 using System.Collections.Concurrent;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using DtronixPdf.Actions;
@@ -25,6 +26,67 @@ namespace DtronixPdf
         {
             _manager = manager;
             _documentInstance = documentInstance;
+        }
+
+        public static async Task<PdfDocument> Load(
+            byte[] data,
+            string password,
+            CancellationToken cancellationToken = default)
+        {
+            return await Load(data, password, PDFiumCoreManager.Default, cancellationToken);
+        }
+        
+        public static async Task<PdfDocument> Load(
+            byte[] data,
+            string password,
+            PDFiumCoreManager manager,
+            CancellationToken cancellationToken = default)
+        {
+            var gch = GCHandle.Alloc(data, GCHandleType.Pinned);
+            var ptr = gch.AddrOfPinnedObject();
+            var result = await Load(ptr, (ulong)data.Length, password, manager, cancellationToken);
+            gch.Free(); // free the pinned handle
+            return result;
+        }
+
+        public static async Task<PdfDocument> Load(
+            IntPtr ptr,
+            ulong size,
+            string password,
+            CancellationToken cancellationToken = default)
+        {
+            return await Load(ptr, size, password, PDFiumCoreManager.Default, cancellationToken);
+        }
+
+        public static async Task<PdfDocument> Load(
+            IntPtr ptr,
+            ulong size,
+            string password,
+            PDFiumCoreManager manager,
+            CancellationToken cancellationToken = default)
+        {
+            await PDFiumCoreManager.Initialize();
+
+            int pages = -1;
+            var result = await manager.Dispatcher.QueueWithResult(_ =>
+            {
+                var document = fpdfview.FPDF_LoadMemDocument64(ptr, size , password);
+                pages = fpdfview.FPDF_GetPageCount(document);
+                return document;
+            }, cancellationToken: cancellationToken);
+
+            if (result == null)
+                return null;
+
+            var pdfDocument = new PdfDocument(manager, result)
+            {
+                Pages = pages,
+            };
+
+            manager.AddDocument(pdfDocument);
+
+            return pdfDocument;
+            
         }
 
         public static Task<PdfDocument> Load(
