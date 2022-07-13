@@ -173,7 +173,7 @@ namespace DtronixPdf
         {
             var newDocument = await Create();
             await newDocument.ImportPages(this, pageRange, 0);
-
+            newDocument.Pages = fpdfview.FPDF_GetPageCount(newDocument._documentInstance);
             return newDocument;
         }
 

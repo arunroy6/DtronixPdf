@@ -45,6 +45,14 @@ namespace DtronixPdf.Tests
 
             Assert.Greater(sw.Length, 10000);
         }
+        
+        [Test]
+        public async Task ExportPagesWithPageCount()
+        {
+            await using var document = await PdfDocument.Load("TestPdf.pdf", null);
+            var extractedDocument = await document.ExtractPages("1");
+            Assert.AreEqual(1,extractedDocument.Pages);
+        }
 
         private async Task<byte[]> LoadFileContentAsync(string path)
         {

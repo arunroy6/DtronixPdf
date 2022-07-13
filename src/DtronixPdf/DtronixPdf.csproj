@@ -14,9 +14,4 @@
 		<PackageReference Include="PDFiumCore" Version="100.0.4849.1" />
 		<PackageReference Include="SixLabors.ImageSharp" Version="1.0.4" />
 	</ItemGroup>
-	<PropertyGroup>
-		<PackageId>QB.Dtronix.Pdf</PackageId>
-		<Authors>InnoQBTech</Authors>
-		<Company>InnoQB</Company>
-	</PropertyGroup>
 </Project>
