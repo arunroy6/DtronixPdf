@@ -1,82 +1,97 @@
 ﻿using System;
 using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Runtime.InteropServices;
 using PDFiumCore;
 
 
 namespace DtronixPdf
 {
-    public class PdfDocument : IAsyncDisposable
+    public class PdfDocument : IDisposable
     {
-        private readonly FpdfDocumentT _documentInstance;
+        internal readonly FpdfDocumentT Instance;
 
-        private readonly PDFiumCoreManager _manager;
+        private bool _isDisposed = false;
+        private IntPtr? _documentPointer;
+
+        //private static PdfActionSynchronizer _synchronizer = new PdfActionSynchronizer();
 
         public int Pages { get; private set; }
 
-
-        private PdfDocument(PDFiumCoreManager manager, FpdfDocumentT documentInstance)
+        private PdfDocument(FpdfDocumentT instance)
         {
-            _manager = manager;
-            _documentInstance = documentInstance;
+            Instance = instance;
+            PdfiumManager.Default.AddDocument(this);
         }
 
-        public static Task<PdfDocument> Load(
-            string path,
-            string password,
-            CancellationToken cancellationToken = default)
+        public static PdfDocument Load(string path, string password)
         {
-            return Load(path, password, PDFiumCoreManager.Default, cancellationToken);
+            PdfiumManager.Initialize();
+            
+            var document = PdfiumManager.Default.Synchronizer.SyncExec(() => fpdfview.FPDF_LoadDocument(path, password));
+            var pages = PdfiumManager.Default.Synchronizer.SyncExec(() => fpdfview.FPDF_GetPageCount(document));
+
+            if (document == null)
+                return null;
+
+            var pdfDocument = new PdfDocument(document) { Pages = pages, };
+
+            return pdfDocument;
+
         }
 
-        public static async Task<PdfDocument> Load(
-            string path,
-            string password,
-            PDFiumCoreManager manager,
-            CancellationToken cancellationToken = default)
+        public static unsafe PdfDocument Load(Stream stream, string password)
         {
-            await PDFiumCoreManager.Initialize();
+            //var synchronizer = new PdfActionSynchronizer();
+
+            var length = (int)stream.Length;
+
+            var ptr = NativeMemory.Alloc((nuint)length);
+
+            Span<byte> ptrSpan = new Span<byte>(ptr, length);
+            var pointer = new IntPtr(ptr);
+            var readLength = 0;
+
+            // Copy the data to the memory.
+            while ((readLength = stream.Read(ptrSpan)) > 0)
+                ptrSpan = ptrSpan.Slice(readLength);
+
+            PdfiumManager.Initialize();
 
             int pages = -1;
-            var result = await manager.Dispatcher.QueueResult(_ =>
-                {
-                    var document = fpdfview.FPDF_LoadDocument(path, password);
-                    pages = fpdfview.FPDF_GetPageCount(document);
-                    return document;
-                }, cancellationToken: cancellationToken);
+            var result = PdfiumManager.Default.Synchronizer.SyncExec(() =>
+            {
+                var document = fpdfview.FPDF_LoadMemDocument(pointer, length, password);
+                pages = fpdfview.FPDF_GetPageCount(document);
+                return document;
+            });
 
             if (result == null)
                 return null;
 
-            var pdfDocument = new PdfDocument(manager, result)
+            var pdfDocument = new PdfDocument(result)
             {
                 Pages = pages,
+                _documentPointer = pointer
             };
-
-            manager.AddDocument(pdfDocument);
 
             return pdfDocument;
         }
 
-        public static Task<PdfDocument> Create()
+        public static PdfDocument Create()
         {
-            return Create(PDFiumCoreManager.Default);
-        }
+            //var synchronizer = new PdfActionSynchronizer();
 
-        public static async Task<PdfDocument> Create(PDFiumCoreManager manager)
-        {
-            var result = await manager.Dispatcher.QueueResult(_ => fpdf_edit.FPDF_CreateNewDocument());
+            var result = PdfiumManager.Default.Synchronizer.SyncExec(fpdf_edit.FPDF_CreateNewDocument);
 
             if (result == null)
                 return null;
 
-            return new PdfDocument(manager, result);
+            return new PdfDocument(result);
         }
 
-        public Task<PdfPage> GetPage(int pageIndex)
+        public PdfPage GetPage(int pageIndex)
         {
-            return PdfPage.Create(_manager.Dispatcher, _documentInstance, pageIndex);
+            return PdfPage.Create(this, pageIndex);
         }
 
         /// <summary>
@@ -88,13 +103,10 @@ namespace DtronixPdf
         /// If null, all pages are imported.</param>
         /// <param name="insertIndex">Insertion index is 0 based.</param>
         /// <returns>True on success, false on failure.</returns>
-        public Task<bool> ImportPages(PdfDocument document, string pageRange, int insertIndex)
+        public bool ImportPages(PdfDocument document, string pageRange, int insertIndex)
         {
-            return _manager.Dispatcher.QueueResult(_ =>
-            {
-                var result = fpdf_ppo.FPDF_ImportPages(_documentInstance, document._documentInstance, pageRange, insertIndex);
-                return result == 1;
-            });
+            return PdfiumManager.Default.Synchronizer.SyncExec(() =>
+                fpdf_ppo.FPDF_ImportPages(Instance, document.Instance, pageRange, insertIndex) == 1);
         }
 
         /// <summary>
@@ -102,10 +114,10 @@ namespace DtronixPdf
         /// </summary>
         /// <param name="pageRange">Pages are 1 based. Pages are separated by commas. Such as "1,3,5-7".</param>
         /// <returns>New document with the specified pages.</returns>
-        public async Task<PdfDocument> ExtractPages(string pageRange)
+        public PdfDocument ExtractPages(string pageRange)
         {
-            var newDocument = await Create();
-            await newDocument.ImportPages(this, pageRange, 0);
+            var newDocument = Create();
+            newDocument.ImportPages(this, pageRange, 0);
 
             return newDocument;
         }
@@ -115,22 +127,21 @@ namespace DtronixPdf
         /// </summary>
         /// <param name="pageIndex">0 based index.</param>
         /// <returns>True on success, false on failure.</returns>
-        public Task DeletePage(int pageIndex)
+        public void DeletePage(int pageIndex)
         {
-            return _manager.Dispatcher.Queue(() => fpdf_edit.FPDFPageDelete(_documentInstance, pageIndex));
-            
+            PdfiumManager.Default.Synchronizer.SyncExec(() => fpdf_edit.FPDFPageDelete(Instance, pageIndex));
         }
+
 
         /// <summary>
         /// Saves the current document to the specified file path.
         /// </summary>
         /// <param name="path">Path to save the PdfDocument.</param>
         /// <returns>True on success, false on failure.</returns>
-        public async Task<bool> Save(string path)
+        public bool Save(string path)
         {
-            await using var fs = new FileStream(path, FileMode.Create);
-
-            return await Save(fs);
+            using var fs = new FileStream(path, FileMode.Create);
+            return Save(fs);
         }
 
         /// <summary>
@@ -138,7 +149,7 @@ namespace DtronixPdf
         /// </summary>
         /// <param name="stream">Destination stream to write the PdfDocument.</param>
         /// <returns>True on success, false on failure.</returns>
-        public async Task<bool> Save(Stream stream)
+        public bool Save(Stream stream)
         {
             var writer = new PdfFileWriteCopyStream(stream);
             /*
@@ -148,20 +159,28 @@ namespace DtronixPdf
             #define FPDF_REMOVE_SECURITY 3
              */
 
-            var result = await _manager.Dispatcher.QueueResult(_ =>
-                fpdf_save.FPDF_SaveAsCopy(_documentInstance, writer, 1));
+            var result = PdfiumManager.Default.Synchronizer.SyncExec(() => fpdf_save.FPDF_SaveAsCopy(Instance, writer, 1));
 
             return result == 1;
         }
 
-        public async ValueTask DisposeAsync()
+        public unsafe void Dispose()
         {
-            await _manager.Dispatcher.Queue(() =>
-            {
-                fpdfview.FPDF_CloseDocument(_documentInstance);
-            });
+            if (_isDisposed)
+                return;
 
-            _manager.RemoveDocument(this);
+            _isDisposed = true;
+
+            PdfiumManager.Default.Synchronizer.SyncExec(() => fpdfview.FPDF_CloseDocument(Instance));
+
+            PdfiumManager.Default.RemoveDocument(this);
+
+            // Free the native memory.
+            if (_documentPointer != null)
+            {
+                NativeMemory.Free(_documentPointer.Value.ToPointer());
+                _documentPointer = null;
+            }
         }
     }
 }
